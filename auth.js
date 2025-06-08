@@ -235,13 +235,15 @@ async function main() {
         console.log(`\n\n--- MEMULAI SIKLUS PENGECEKAN BARU --- (${new Date().toLocaleString('id-ID', { timeZone: 'Asia/Jakarta' })}) ---`);
         let whatsappClient = null;
 
+        const config = await readConfig(); // Baca config di dalam fungsi
+        const isHeadless = config.display !== 'on'; // Headless jika display BUKAN 'on'
         try {
             if (withWhatsApp) {
                 const config = await readConfig();
                 whatsappClient = new Client({
                     authStrategy: new LocalAuth({ dataPath: config.whatsappSessionPath }),
                     puppeteer: {
-                        headless: true,
+                        headless: isHeadless,
                         args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--no-zygote', '--disable-gpu']
                     }
                 });
