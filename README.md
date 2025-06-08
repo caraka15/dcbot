@@ -109,12 +109,11 @@ File ini adalah jantung dari bot. Berikut penjelasan untuk setiap field:
 
 ```json
 {
-  "display": "off",
-  "targetUrl": "[https://discord.com/login](https://discord.com/login)",
-  "appUrl": "[https://discord.com/channels/@me](https://discord.com/channels/@me)",
-  "pollChannelUrl": "[https://discord.com/channels/GUILD_ID/CHANNEL_ID](https://discord.com/channels/GUILD_ID/CHANNEL_ID)",
+  "display": "on",
+  "targetUrl": "https://discord.com/login",
+  "appUrl": "https://discord.com/channels/@me",
+  "pollChannelUrl": "https://discord.com/channels/819836895739248700/1380552086944747692",
   "whatsappSessionPath": "./whatsapp_session",
-  "display": "on"
   "accounts": [
     {
       "accountName": "Nama Akun (untuk log)",
