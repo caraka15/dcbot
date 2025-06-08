@@ -1,0 +1,23 @@
+# Folder cache untuk sesi Discord
+/cache/
+
+# Folder sesi untuk WhatsApp
+/whatsapp_session/
+
+# File konfigurasi yang berisi data sensitif
+config.json
+
+# Dependensi Node.js
+/node_modules/
+/.wwebjs_cache/
+
+# File log dan debug
+*.log
+npm-debug.log*
+
+# Screenshot yang dihasilkan bot saat terjadi error
+*.png
+
+# File sistem operasi
+.DS_Store
+Thumbs.db
