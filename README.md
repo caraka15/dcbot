@@ -32,13 +32,13 @@ Ikuti langkah-langkah berikut untuk menyiapkan dan menjalankan bot.
     Buka terminal atau command prompt, lalu clone repository ini ke komputer Anda.
 
     ```bash
-    git clone <URL_REPOSITORY_ANDA>
+    git clone https://github.com/caraka15/dcbot.git
     ```
 
 2.  **Masuk ke Direktori Proyek**
 
     ```bash
-    cd <NAMA_FOLDER_REPOSITORY>
+    cd dcbot
     ```
 
 3.  **Install Dependencies**
