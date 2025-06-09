@@ -4,6 +4,7 @@ const qrcode = require('qrcode-terminal');
 const puppeteer = require('puppeteer');
 const { authenticator } = require('otplib');
 const fs = require('fs').promises;
+const fsSync = require('fs'); // <-- CUKUP TAMBAHKAN BARIS INI
 const path = require('path');
 const readline = require('readline');
 
@@ -102,10 +103,12 @@ async function getNewTokenForAccount(accountConfig) {
     try {
         const userDataDir = path.resolve(__dirname, accountConfig.userDataDir);
         console.log(`Membersihkan sesi lama di: ${userDataDir}`);
-        if (fs.existsSync(userDataDir)) await fs.rm(userDataDir, { recursive: true, force: true });
+        if (fsSync.existsSync(userDataDir)) await fs.rm(userDataDir, { recursive: true, force: true }); // <-- CUKUP UBAH INI
         await fs.mkdir(userDataDir, { recursive: true });
 
-        browser = await puppeteer.launch({ headless: true, args: ['--no-sandbox', '--disable-gpu'] });
+        const config = await readConfig();
+        const isHeadless = (config.display === 'on') ? false : true;
+        browser = await puppeteer.launch({ headless: isHeadless, args: ['--no-sandbox', '--disable-gpu'] });
         const page = await browser.newPage();
         await page.setRequestInterception(true);
         page.on('request', (request) => {
@@ -123,7 +126,7 @@ async function getNewTokenForAccount(accountConfig) {
         await page.click('button[type="submit"]');
 
         try {
-            await page.waitForSelector('input[autocomplete="one-time-code"]', { timeout: 10000 });
+            await page.waitForSelector('input[autocomplete="one-time-code"]', { timeout: 15000 });
             const twoFactorCode = authenticator.generate(accountConfig.twoFactorSecret);
             await page.type('input[autocomplete="one-time-code"]', twoFactorCode);
             await page.click('button[type="submit"]');
@@ -235,11 +238,10 @@ async function main() {
         console.log(`\n\n--- MEMULAI SIKLUS PENGECEKAN BARU --- (${new Date().toLocaleString('id-ID', { timeZone: 'Asia/Jakarta' })}) ---`);
         let whatsappClient = null;
 
-        const config = await readConfig(); // Baca config di dalam fungsi
-        const isHeadless = config.display !== 'on'; // Headless jika display BUKAN 'on'
         try {
             if (withWhatsApp) {
                 const config = await readConfig();
+                const isHeadless = (config.display === 'on') ? false : true;
                 whatsappClient = new Client({
                     authStrategy: new LocalAuth({ dataPath: config.whatsappSessionPath }),
                     puppeteer: {
