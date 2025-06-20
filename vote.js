@@ -132,7 +132,7 @@ async function getPollVotes(token, channelId, messageId, answerId) {
     return { users: allUsers };
 }
 
-async function voteOnPoll(token, account, message, chosenAnswerId, chosenAnswerText, questionText) { // Hapus whatsappClient dari parameter
+async function voteOnPoll(token, account, message, chosenAnswerId, chosenAnswerText, questionText) {
     console.log(`🗳️  Memilih jawaban #${chosenAnswerId} ("${chosenAnswerText}") untuk poll: "${questionText}"`);
     const url = `https://discord.com/api/v9/channels/${message.channel_id}/polls/${message.id}/answers/@me`;
     const headers = { "Authorization": token, "User-Agent": "Mozilla/5.0", "Content-Type": "application/json" };
@@ -160,7 +160,7 @@ async function getNewTokenForAccount(accountConfig) {
     try {
         const userDataDir = path.resolve(__dirname, accountConfig.userDataDir);
         console.log(`Membersihkan sesi lama di: ${userDataDir}`);
-        if (fsSync.existsSync(userDataDir)) await fs.rm(userDataDir, { recursive: true, force: true });
+        if (fsSync.existsSync(userDataDir)) await fs.rm(userDataDir, { recursive: true, true: true }); // fixed true:true to force:true
         await fs.mkdir(userDataDir, { recursive: true });
 
         const config = await readConfig();
@@ -213,13 +213,12 @@ async function getNewTokenForAccount(accountConfig) {
 async function runDiscordCycle(whatsappClient) {
     const config = await readConfig();
     const channelIdParts = config.pollChannelUrl.split('/');
-    // FIX: Correctly reference channelIdParts
     const channelId = channelIdParts.pop() || channelIdParts.pop();
     console.log(`🎯 Channel ID target diatur ke: ${channelId}`);
 
     let allPollsDataFromAPI = [];
     let validInitialToken = null;
-    let storedPollData = await readPollData();
+    let storedPollData = await readPollData(); // Load initial data from disk
 
     // --- Mencari token valid dari salah satu akun untuk panggilan API awal ---
     if (config.accounts.length === 0) {
@@ -298,7 +297,7 @@ async function runDiscordCycle(whatsappClient) {
         for (const apiPoll of allPollsDataFromAPI) {
             const pollId = apiPoll.id;
             const storedPoll = storedPollData.polls[pollId];
-            if (storedPoll) { // Jika poll sudah ada di penyimpanan lokal
+            if (storedPoll) {
                 const currentApiEndedAt = apiPoll.poll.results?.ended_at || null;
                 const isEndedNow = currentApiEndedAt ? (new Date(currentApiEndedAt) <= now) : false;
 
@@ -322,17 +321,6 @@ async function runDiscordCycle(whatsappClient) {
     // --- Update storedPollData dengan data terbaru dari API dan detail voter ---
     const now = new Date();
     const activePollIdsToProcess = new Set();
-    // Initialize cycleSummary here to collect results for the WA admin message
-    const cycleSummary = {
-        totalAccounts: config.accounts.length,
-        accountsVoted: [], // Successfully voted in this cycle
-        accountsAlreadyVoted: [], // Already voted (most popular option)
-        accountsAlreadyVotedNotMostPopular: [], // Already voted (but not most popular option)
-        accountsSkipped: [], // Skipped due to missing username
-        accountsFailedToVote: [], // Tried to vote but failed
-        accountsTokenFailed: [] // Failed to acquire/refresh token for processing
-    };
-
 
     for (const apiPoll of allPollsDataFromAPI) {
         const pollId = apiPoll.id;
@@ -345,18 +333,20 @@ async function runDiscordCycle(whatsappClient) {
         }
 
         let mostVotedAnswerId = null;
-        let maxVotes = -1;
         let mostVotedAnswerText = '';
 
-        if (apiPoll.poll.results && apiPoll.poll.results.answer_counts) {
-            for (const answerCount of apiPoll.poll.results.answer_counts) {
-                if (answerCount.total > maxVotes) {
-                    maxVotes = answerCount.total;
-                    mostVotedAnswerId = answerCount.id;
-                    const fullAnswer = apiPoll.poll.answers.find(ans => ans.answer_id === answerCount.id);
-                    if (fullAnswer) {
-                        mostVotedAnswerText = fullAnswer.poll_media.text;
-                    }
+        if (apiPoll.poll.results && apiPoll.poll.results.answer_counts && apiPoll.poll.answers) {
+            // Find the answerCount object with the maximum count
+            const topAnswerCount = apiPoll.poll.results.answer_counts.reduce((max, current) => {
+                return (current.count > max.count) ? current : max;
+            }, { count: -1 }); // Initialize with a count less than any possible vote
+
+            if (topAnswerCount.id !== undefined && topAnswerCount.count > -1) { // Ensure a valid top answer was found
+                mostVotedAnswerId = topAnswerCount.id;
+                // Find the corresponding answer text from apiPoll.poll.answers
+                const fullAnswer = apiPoll.poll.answers.find(ans => ans.answer_id === topAnswerCount.id);
+                if (fullAnswer) {
+                    mostVotedAnswerText = fullAnswer.poll_media.text;
                 }
             }
         }
@@ -364,10 +354,10 @@ async function runDiscordCycle(whatsappClient) {
         if (!storedPollData.polls[pollId]) {
             storedPollData.polls[pollId] = {
                 question: apiPoll.poll.question.text,
-                answers: {}, // Akan diisi di bawah
+                answers: {},
                 expiry: apiPoll.poll.expiry || null,
                 ended_at: apiPoll.poll.results ? apiPoll.poll.results.ended_at : null,
-                mostVotedAnswerId: mostVotedAnswerId,
+                bigVoter: mostVotedAnswerId, // ADDED: bigVoter property
                 mostVotedAnswerText: mostVotedAnswerText,
                 loggedEnded: isEnded
             };
@@ -377,7 +367,7 @@ async function runDiscordCycle(whatsappClient) {
             if (apiPoll.poll.results && apiPoll.poll.results.ended_at) {
                 storedPollData.polls[pollId].ended_at = apiPoll.poll.results.ended_at;
             }
-            storedPollData.polls[pollId].mostVotedAnswerId = mostVotedAnswerId;
+            storedPollData.polls[pollId].bigVoter = mostVotedAnswerId; // UPDATED: bigVoter
             storedPollData.polls[pollId].mostVotedAnswerText = mostVotedAnswerText;
 
             if (!storedPollData.polls[pollId].loggedEnded && isEnded) {
@@ -402,8 +392,7 @@ async function runDiscordCycle(whatsappClient) {
             const votesData = await getPollVotes(validInitialToken, channelId, pollId, answerId);
 
             if (votesData && votesData.users) {
-                const apiAnswerCount = apiPoll.poll.results?.answer_counts.find(ac => ac.id === answerId)?.total || 0;
-                storedPollData.polls[pollId].answers[answerId].totalCount = apiAnswerCount;
+                storedPollData.polls[pollId].answers[answerId].totalCount = votesData.users.length;
                 storedPollData.polls[pollId].answers[answerId].voters = [...new Set(votesData.users.map(u => u.username))];
                 console.log(`    Ditemukan total ${votesData.users.length} voter.`);
             } else {
@@ -418,6 +407,25 @@ async function runDiscordCycle(whatsappClient) {
             activePollIdsToProcess.add(pollId);
         }
     }
+
+    // --- PENTING: Simpan data poll yang sudah diperbarui ke file di sini ---
+    await writePollData(storedPollData);
+    console.log("✅ Data poll terbaru (termasuk totalCount, voters, dan bigVoter) telah disimpan ke poll_data.json.");
+
+    // --- MUAT ULANG storedPollData dari file untuk memastikan data yang paling akurat ---
+    storedPollData = await readPollData();
+    console.log("🔄 Data poll dimuat ulang dari file untuk memastikan konsistensi sebelum memproses akun.");
+
+    // Initialize cycleSummary here to collect results for the WA admin message
+    const cycleSummary = {
+        totalAccounts: config.accounts.length,
+        accountsVoted: [],
+        accountsAlreadyVoted: [],
+        accountsAlreadyVotedNotMostPopular: [],
+        accountsSkipped: [],
+        accountsFailedToVote: [],
+        accountsTokenFailed: []
+    };
 
     for (let i = 0; i < config.accounts.length; i++) {
         let account = config.accounts[i];
@@ -450,7 +458,7 @@ async function runDiscordCycle(whatsappClient) {
                 continue;
             }
             const questionText = storedPoll.question;
-            const mostVotedAnswerId = storedPoll.mostVotedAnswerId;
+            const mostVotedAnswerId = storedPoll.bigVoter; // Using bigVoter directly
             const mostVotedAnswerText = storedPoll.mostVotedAnswerText;
 
             let hasVoted = false;
@@ -461,7 +469,7 @@ async function runDiscordCycle(whatsappClient) {
                 if (storedPoll.answers[answerId].voters.includes(account.username)) {
                     hasVoted = true;
                     currentVotedAnswerText = storedPoll.answers[answerId].text;
-                    if (parseInt(answerId) === mostVotedAnswerId) {
+                    if (parseInt(answerId) === mostVotedAnswerId) { // Compare against bigVoter
                         votedOnMostVoted = true;
                     }
                     break;
@@ -473,13 +481,11 @@ async function runDiscordCycle(whatsappClient) {
             if (hasVoted) {
                 if (votedOnMostVoted) {
                     console.log(`    ✅ Akun ${account.accountName} SUDAH vote pada poll ini, dengan pilihan terbanyak: "${mostVotedAnswerText}".`);
-                    // Only add to summary if not already added to prevent duplicates from multiple polls
                     if (!cycleSummary.accountsAlreadyVoted.includes(account.accountName) && !cycleSummary.accountsAlreadyVotedNotMostPopular.includes(account.accountName)) {
                         cycleSummary.accountsAlreadyVoted.push(account.accountName);
                     }
                 } else {
                     console.log(`    ⚠️ Akun ${account.accountName} SUDAH vote pada poll ini, tetapi BUKAN pilihan terbanyak (vote: "${currentVotedAnswerText}").`);
-                    // Only add to summary if not already added to prevent duplicates from multiple polls
                     if (!cycleSummary.accountsAlreadyVoted.includes(account.accountName) && !cycleSummary.accountsAlreadyVotedNotMostPopular.includes(account.accountName)) {
                         cycleSummary.accountsAlreadyVotedNotMostPopular.push(account.accountName);
                     }
@@ -499,18 +505,15 @@ async function runDiscordCycle(whatsappClient) {
                             }
                             storedPoll.answers[mostVotedAnswerId].totalCount++;
                         }
-                        // Only add to summary if not already added
                         if (!cycleSummary.accountsVoted.includes(account.accountName)) {
                             cycleSummary.accountsVoted.push(account.accountName);
                         }
                     } else {
-                        // Add details for failed vote
                         cycleSummary.accountsFailedToVote.push({ name: account.accountName, poll: questionText, reason: "API vote failed" });
                     }
                     await delay(3000);
                 } else {
                     console.warn(`    ⚠️ Tidak dapat menentukan pilihan terbanyak untuk poll ini. Melewatkan vote.`);
-                    // Add details for skipped vote due to no most voted answer
                     cycleSummary.accountsFailedToVote.push({ name: account.accountName, poll: questionText, reason: "No most voted answer found" });
                 }
             }
@@ -525,19 +528,18 @@ async function runDiscordCycle(whatsappClient) {
     }
     console.log('\n--- Semua akun dan poll selesai diproses ---');
 
+    // Simpan lagi di akhir siklus untuk memastikan setiap perubahan akibat voting juga tersimpan
     await writePollData(storedPollData);
-    console.log("✅ Data poll terbaru telah disimpan ke poll_data.json.");
+    console.log("✅ Data poll terbaru (setelah pemrosesan akun) telah disimpan ke poll_data.json.");
 
     // --- Kirim Ringkasan ke WhatsApp Admin ---
     if (whatsappClient && config.wa_admin) {
         const adminChatId = `${config.wa_admin}@c.us`;
         let summaryMessage = `*Ringkasan Siklus Bot Discord Voter (${new Date().toLocaleString('id-ID', { timeZone: 'Asia/Jakarta' })})*\n\n`;
 
-        // Check if there were any new polls or active polls processed
         if (newPollsFound === 0 && activePollIdsToProcess.size === 0) {
             summaryMessage += `Tidak ada poll aktif baru yang terdeteksi atau perlu divote.`;
         } else {
-            // Aggregate successful votes by account to prevent duplicate entries if an account voted on multiple polls
             const uniqueVoted = [...new Set(cycleSummary.accountsVoted)];
             const uniqueAlreadyVoted = [...new Set(cycleSummary.accountsAlreadyVoted)];
             const uniqueAlreadyVotedNotMostPopular = [...new Set(cycleSummary.accountsAlreadyVotedNotMostPopular)];
@@ -570,7 +572,6 @@ async function runDiscordCycle(whatsappClient) {
 
             summaryMessage += `❌ *Gagal Vote:* (${uniqueFailedToVote.length})\n`;
             if (uniqueFailedToVote.length > 0) {
-                // Log details for each failure
                 const failedDetails = cycleSummary.accountsFailedToVote
                     .map(item => `- ${item.name} (Poll: "${item.poll}", Sebab: ${item.reason || 'Tidak diketahui'})`)
                     .join('\n');
@@ -600,7 +601,7 @@ async function runDiscordCycle(whatsappClient) {
     }
 }
 
-// --- FUNGSI MAIN() YANG MENGATUR JADWAL & PILIHAN ---
+
 async function main() {
     console.clear();
     console.log('====================================================');
@@ -617,9 +618,9 @@ async function main() {
 
     if (config.wa_admin) {
         withWhatsApp = true;
-        console.log(`\n✅ Fitur notifikasi WhatsApp aktif. Notifikasi akan dikirim ke ${config.wa_admin}.`);
+        console.log(`\n✅ Fitur notifikasi WhatsApp aktif.Notifikasi akan dikirim ke ${config.wa_admin}.`);
     } else {
-        console.log(`\n❌ Fitur notifikasi WhatsApp tidak aktif. Tambahkan "wa_admin" di config.json untuk mengaktifkannya.`);
+        console.log(`\n❌ Fitur notifikasi WhatsApp tidak aktif.Tambahkan "wa_admin" di config.json untuk mengaktifkannya.`);
     }
 
     const intervalHours = 5;
@@ -627,7 +628,7 @@ async function main() {
     console.log(`Siklus pengecekan akan berjalan setiap ${intervalHours} jam.`);
 
     while (true) {
-        console.log(`\n\n--- MEMULAI SIKLUS PENGECEKAN BARU --- (${new Date().toLocaleString('id-ID', { timeZone: 'Asia/Jakarta' })}) ---`);
+        console.log(`\n\n-- - MEMULAI SIKLUS PENGECEKAN BARU-- - (${new Date().toLocaleString('id-ID', { timeZone: 'Asia/Jakarta' })})--- `);
 
         try {
             if (withWhatsApp) {
@@ -655,7 +656,7 @@ async function main() {
             }
         }
 
-        console.log(`\n--- SIKLUS SELESAI. Bot akan tidur selama ${intervalHours} jam. ---`);
+        console.log(`\n-- - SIKLUS SELESAI.Bot akan tidur selama ${intervalHours} jam. -- - `);
         await delay(intervalInMs);
     }
 }
