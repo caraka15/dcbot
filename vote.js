@@ -132,7 +132,7 @@ async function getPollVotes(token, channelId, messageId, answerId) {
     return { users: allUsers };
 }
 
-async function voteOnPoll(token, account, message, chosenAnswerId, chosenAnswerText, questionText, whatsappClient) {
+async function voteOnPoll(token, account, message, chosenAnswerId, chosenAnswerText, questionText) { // Hapus whatsappClient dari parameter
     console.log(`🗳️  Memilih jawaban #${chosenAnswerId} ("${chosenAnswerText}") untuk poll: "${questionText}"`);
     const url = `https://discord.com/api/v9/channels/${message.channel_id}/polls/${message.id}/answers/@me`;
     const headers = { "Authorization": token, "User-Agent": "Mozilla/5.0", "Content-Type": "application/json" };
@@ -142,24 +142,14 @@ async function voteOnPoll(token, account, message, chosenAnswerId, chosenAnswerT
         const response = await fetch(url, { method: 'PUT', headers, body });
         if (response.status === 204) {
             console.log(`✅ Vote berhasil untuk ${account.accountName}!`);
-            if (whatsappClient && account.whatsappNumber) {
-                const chatId = `${account.whatsappNumber}@c.us`;
-                const notificationMessage = `*Vote Berhasil Terkirim!* 🗳️\n\n*Akun:*\n${account.accountName}\n\n*Pertanyaan:*\n${questionText}\n\n*Jawaban Anda (pilihan terbanyak):*\n${chosenAnswerText}`;
-                try {
-                    await whatsappClient.sendMessage(chatId, notificationMessage);
-                    console.log(`📱 Notifikasi WhatsApp terkirim ke ${account.whatsappNumber}`);
-                } catch (waErr) {
-                    console.error(`❌ Gagal mengirim notifikasi WA ke ${account.whatsappNumber}:`, waErr.message);
-                }
-            }
-            return true; // Vote berhasil
+            return true;
         } else {
             console.error(`❌ Gagal vote untuk ${account.accountName}, status: ${response.status}`, await response.text());
-            return false; // Vote gagal
+            return false;
         }
     } catch (error) {
         console.error(`❌ Terjadi error saat melakukan vote untuk ${account.accountName}:`, error);
-        return false; // Vote gagal
+        return false;
     }
 }
 
@@ -223,12 +213,13 @@ async function getNewTokenForAccount(accountConfig) {
 async function runDiscordCycle(whatsappClient) {
     const config = await readConfig();
     const channelIdParts = config.pollChannelUrl.split('/');
+    // FIX: Correctly reference channelIdParts
     const channelId = channelIdParts.pop() || channelIdParts.pop();
     console.log(`🎯 Channel ID target diatur ke: ${channelId}`);
 
-    let allPollsDataFromAPI = []; // Data poll mentah dari API (dengan token awal)
-    let validInitialToken = null; // Token yang digunakan untuk mengambil daftar poll global
-    let storedPollData = await readPollData(); // Membaca data poll yang tersimpan
+    let allPollsDataFromAPI = [];
+    let validInitialToken = null;
+    let storedPollData = await readPollData();
 
     // --- Mencari token valid dari salah satu akun untuk panggilan API awal ---
     if (config.accounts.length === 0) {
@@ -294,7 +285,6 @@ async function runDiscordCycle(whatsappClient) {
     const currentPollIds = new Set(Object.keys(storedPollData.polls));
     const apiPollIds = new Set(allPollsDataFromAPI.map(p => p.id));
 
-    // Hitung poll baru
     for (const apiPollId of apiPollIds) {
         if (!currentPollIds.has(apiPollId)) {
             newPollsFound++;
@@ -316,14 +306,13 @@ async function runDiscordCycle(whatsappClient) {
                     storedPoll.ended_at = currentApiEndedAt;
                     console.log(`  [INFO] Status berakhir poll "${apiPoll.poll.question.text}" (ID: ${pollId}) telah diperbarui.`);
                 }
-                // Update loggedEnded juga jika statusnya berubah ke ended
                 if (!storedPoll.loggedEnded && isEndedNow) {
                     console.log(`  [INFO] Poll "${apiPoll.poll.question.text}" (ID: ${pollId}) kini sudah berakhir.`);
                     storedPoll.loggedEnded = true;
                 }
             }
         }
-        await writePollData(storedPollData); // Simpan perubahan status ended_at
+        await writePollData(storedPollData);
         console.log("✅ Data poll terbaru (status berakhir) telah disimpan ke poll_data.json.");
         return; // Hentikan seluruh fungsi runDiscordCycle di sini
     } else {
@@ -332,7 +321,18 @@ async function runDiscordCycle(whatsappClient) {
 
     // --- Update storedPollData dengan data terbaru dari API dan detail voter ---
     const now = new Date();
-    const activePollIdsToProcess = new Set(); // Hanya simpan ID poll yang aktif
+    const activePollIdsToProcess = new Set();
+    // Initialize cycleSummary here to collect results for the WA admin message
+    const cycleSummary = {
+        totalAccounts: config.accounts.length,
+        accountsVoted: [], // Successfully voted in this cycle
+        accountsAlreadyVoted: [], // Already voted (most popular option)
+        accountsAlreadyVotedNotMostPopular: [], // Already voted (but not most popular option)
+        accountsSkipped: [], // Skipped due to missing username
+        accountsFailedToVote: [], // Tried to vote but failed
+        accountsTokenFailed: [] // Failed to acquire/refresh token for processing
+    };
+
 
     for (const apiPoll of allPollsDataFromAPI) {
         const pollId = apiPoll.id;
@@ -344,7 +344,6 @@ async function runDiscordCycle(whatsappClient) {
             }
         }
 
-        // Tentukan pilihan terbanyak secara global dari data API ini
         let mostVotedAnswerId = null;
         let maxVotes = -1;
         let mostVotedAnswerText = '';
@@ -362,7 +361,6 @@ async function runDiscordCycle(whatsappClient) {
             }
         }
 
-        // Inisialisasi atau update struktur poll di storedPollData
         if (!storedPollData.polls[pollId]) {
             storedPollData.polls[pollId] = {
                 question: apiPoll.poll.question.text,
@@ -374,7 +372,6 @@ async function runDiscordCycle(whatsappClient) {
                 loggedEnded: isEnded
             };
         } else {
-            // Update metadata poll jika ada perubahan
             storedPollData.polls[pollId].question = apiPoll.poll.question.text;
             storedPollData.polls[pollId].expiry = apiPoll.poll.expiry || null;
             if (apiPoll.poll.results && apiPoll.poll.results.ended_at) {
@@ -389,18 +386,15 @@ async function runDiscordCycle(whatsappClient) {
             }
         }
 
-        // --- Panggil getPollVotes untuk setiap pilihan jawaban untuk mendapatkan SEMUA voter ---
-        // Ini akan dilakukan hanya sekali per siklus untuk setiap poll
         for (const answer of apiPoll.poll.answers) {
             const answerId = answer.answer_id;
             const answerText = answer.poll_media.text;
 
-            // Pastikan struktur jawaban ada
             if (!storedPollData.polls[pollId].answers[answerId]) {
                 storedPollData.polls[pollId].answers[answerId] = {
                     text: answerText,
                     totalCount: 0,
-                    voters: [] // Ini akan menyimpan semua username voter
+                    voters: []
                 };
             }
 
@@ -410,7 +404,6 @@ async function runDiscordCycle(whatsappClient) {
             if (votesData && votesData.users) {
                 const apiAnswerCount = apiPoll.poll.results?.answer_counts.find(ac => ac.id === answerId)?.total || 0;
                 storedPollData.polls[pollId].answers[answerId].totalCount = apiAnswerCount;
-                // Hanya simpan username, pastikan unik
                 storedPollData.polls[pollId].answers[answerId].voters = [...new Set(votesData.users.map(u => u.username))];
                 console.log(`    Ditemukan total ${votesData.users.length} voter.`);
             } else {
@@ -418,24 +411,22 @@ async function runDiscordCycle(whatsappClient) {
                 storedPollData.polls[pollId].answers[answerId].voters = [];
                 console.log(`    Tidak ada voter atau gagal mengambil data.`);
             }
-            await delay(500); // Jeda kecil antar panggilan getPollVotes
+            await delay(500);
         }
 
-        // Hanya tambahkan ke daftar proses jika belum berakhir
         if (!isEnded) {
             activePollIdsToProcess.add(pollId);
         }
     }
 
-    // --- Siklus pemrosesan untuk setiap akun (menggunakan data dari storedPollData) ---
     for (let i = 0; i < config.accounts.length; i++) {
         let account = config.accounts[i];
         console.log(`\n--- Memproses Akun: ${account.accountName} ---`);
 
-        // Pastikan akun memiliki username di config
         if (!account.username) {
             console.warn(`  [SKIP] Akun ${account.accountName} tidak memiliki 'username' di config. Lewati pengecekan vote.`);
-            continue; // Lanjutkan ke akun berikutnya
+            cycleSummary.accountsSkipped.push({ name: account.accountName, reason: "No username in config" });
+            continue;
         }
 
         let currentToken = account.authToken;
@@ -444,6 +435,7 @@ async function runDiscordCycle(whatsappClient) {
             currentToken = await getNewTokenForAccount(account);
             if (!currentToken) {
                 console.error(`❌ Gagal mendapatkan token baru untuk ${account.accountName}, skip akun ini.`);
+                cycleSummary.accountsTokenFailed.push({ name: account.accountName, reason: "Failed to get new token" });
                 continue;
             }
             config.accounts[i].authToken = currentToken;
@@ -462,15 +454,14 @@ async function runDiscordCycle(whatsappClient) {
             const mostVotedAnswerText = storedPoll.mostVotedAnswerText;
 
             let hasVoted = false;
-            let votedOnMostVoted = false; // Menandakan apakah sudah vote pada pilihan terbanyak
+            let votedOnMostVoted = false;
             let currentVotedAnswerText = "Tidak Diketahui";
 
-            // Cek apakah username akun ini ada di daftar voter untuk pilihan manapun
             for (const answerId in storedPoll.answers) {
                 if (storedPoll.answers[answerId].voters.includes(account.username)) {
                     hasVoted = true;
                     currentVotedAnswerText = storedPoll.answers[answerId].text;
-                    if (parseInt(answerId) === mostVotedAnswerId) { // Perbandingan ID harus aman (number vs string)
+                    if (parseInt(answerId) === mostVotedAnswerId) {
                         votedOnMostVoted = true;
                     }
                     break;
@@ -482,8 +473,16 @@ async function runDiscordCycle(whatsappClient) {
             if (hasVoted) {
                 if (votedOnMostVoted) {
                     console.log(`    ✅ Akun ${account.accountName} SUDAH vote pada poll ini, dengan pilihan terbanyak: "${mostVotedAnswerText}".`);
+                    // Only add to summary if not already added to prevent duplicates from multiple polls
+                    if (!cycleSummary.accountsAlreadyVoted.includes(account.accountName) && !cycleSummary.accountsAlreadyVotedNotMostPopular.includes(account.accountName)) {
+                        cycleSummary.accountsAlreadyVoted.push(account.accountName);
+                    }
                 } else {
                     console.log(`    ⚠️ Akun ${account.accountName} SUDAH vote pada poll ini, tetapi BUKAN pilihan terbanyak (vote: "${currentVotedAnswerText}").`);
+                    // Only add to summary if not already added to prevent duplicates from multiple polls
+                    if (!cycleSummary.accountsAlreadyVoted.includes(account.accountName) && !cycleSummary.accountsAlreadyVotedNotMostPopular.includes(account.accountName)) {
+                        cycleSummary.accountsAlreadyVotedNotMostPopular.push(account.accountName);
+                    }
                 }
             } else {
                 unvotedPollsFoundForAccount++;
@@ -491,37 +490,114 @@ async function runDiscordCycle(whatsappClient) {
 
                 if (mostVotedAnswerId !== null) {
                     console.log(`    ⭐ Pilihan terbanyak (global): "${mostVotedAnswerText}" (${mostVotedAnswerId}).`);
-                    const voteSuccess = await voteOnPoll(currentToken, account, storedPoll, mostVotedAnswerId, mostVotedAnswerText, questionText, whatsappClient);
+                    const voteSuccess = await voteOnPoll(currentToken, account, storedPoll, mostVotedAnswerId, mostVotedAnswerText, questionText);
 
                     if (voteSuccess) {
-                        // Perbarui status vote di storedPollData setelah vote berhasil
                         if (storedPoll.answers[mostVotedAnswerId]) {
-                            // Tambahkan username ke daftar voter untuk opsi yang divote
                             if (!storedPoll.answers[mostVotedAnswerId].voters.includes(account.username)) {
                                 storedPoll.answers[mostVotedAnswerId].voters.push(account.username);
                             }
-                            storedPoll.answers[mostVotedAnswerId].totalCount++; // Tambah total count juga
+                            storedPoll.answers[mostVotedAnswerId].totalCount++;
                         }
+                        // Only add to summary if not already added
+                        if (!cycleSummary.accountsVoted.includes(account.accountName)) {
+                            cycleSummary.accountsVoted.push(account.accountName);
+                        }
+                    } else {
+                        // Add details for failed vote
+                        cycleSummary.accountsFailedToVote.push({ name: account.accountName, poll: questionText, reason: "API vote failed" });
                     }
-                    await delay(3000); // Jeda setelah vote
+                    await delay(3000);
                 } else {
                     console.warn(`    ⚠️ Tidak dapat menentukan pilihan terbanyak untuk poll ini. Melewatkan vote.`);
+                    // Add details for skipped vote due to no most voted answer
+                    cycleSummary.accountsFailedToVote.push({ name: account.accountName, poll: questionText, reason: "No most voted answer found" });
                 }
             }
-            await delay(1000); // Jeda antar pengecekan poll untuk akun yang sama
+            await delay(1000);
         }
         if (unvotedPollsFoundForAccount === 0 && activePollIdsToProcess.size > 0) {
             console.log(`  👍 Semua poll aktif sudah di-vote oleh ${account.accountName}.`);
         } else if (activePollIdsToProcess.size === 0) {
             console.log(`  [INFO] Tidak ada poll aktif untuk diproses oleh ${account.accountName}.`);
         }
-        await delay(5000); // Jeda antar akun
+        await delay(5000);
     }
     console.log('\n--- Semua akun dan poll selesai diproses ---');
 
-    // Simpan data poll yang diperbarui
     await writePollData(storedPollData);
     console.log("✅ Data poll terbaru telah disimpan ke poll_data.json.");
+
+    // --- Kirim Ringkasan ke WhatsApp Admin ---
+    if (whatsappClient && config.wa_admin) {
+        const adminChatId = `${config.wa_admin}@c.us`;
+        let summaryMessage = `*Ringkasan Siklus Bot Discord Voter (${new Date().toLocaleString('id-ID', { timeZone: 'Asia/Jakarta' })})*\n\n`;
+
+        // Check if there were any new polls or active polls processed
+        if (newPollsFound === 0 && activePollIdsToProcess.size === 0) {
+            summaryMessage += `Tidak ada poll aktif baru yang terdeteksi atau perlu divote.`;
+        } else {
+            // Aggregate successful votes by account to prevent duplicate entries if an account voted on multiple polls
+            const uniqueVoted = [...new Set(cycleSummary.accountsVoted)];
+            const uniqueAlreadyVoted = [...new Set(cycleSummary.accountsAlreadyVoted)];
+            const uniqueAlreadyVotedNotMostPopular = [...new Set(cycleSummary.accountsAlreadyVotedNotMostPopular)];
+            const uniqueFailedToVote = [...new Set(cycleSummary.accountsFailedToVote.map(f => f.name))];
+            const uniqueSkipped = [...new Set(cycleSummary.accountsSkipped.map(s => s.name))];
+            const uniqueTokenFailed = [...new Set(cycleSummary.accountsTokenFailed.map(t => t.name))];
+
+            summaryMessage += `*Status Akun (${config.accounts.length} Total Akun)*:\n`;
+
+            summaryMessage += `✅ *Berhasil Vote Baru:* (${uniqueVoted.length})\n`;
+            if (uniqueVoted.length > 0) {
+                summaryMessage += uniqueVoted.map(name => `- ${name}`).join('\n') + '\n\n';
+            } else {
+                summaryMessage += `- Tidak ada\n\n`;
+            }
+
+            summaryMessage += `👍 *Sudah Vote (Pilihan Terbanyak):* (${uniqueAlreadyVoted.length})\n`;
+            if (uniqueAlreadyVoted.length > 0) {
+                summaryMessage += uniqueAlreadyVoted.map(name => `- ${name}`).join('\n') + '\n\n';
+            } else {
+                summaryMessage += `- Tidak ada\n\n`;
+            }
+
+            summaryMessage += `⚠️ *Sudah Vote (Bukan Pilihan Terbanyak):* (${uniqueAlreadyVotedNotMostPopular.length})\n`;
+            if (uniqueAlreadyVotedNotMostPopular.length > 0) {
+                summaryMessage += uniqueAlreadyVotedNotMostPopular.map(name => `- ${name}`).join('\n') + '\n\n';
+            } else {
+                summaryMessage += `- Tidak ada\n\n`;
+            }
+
+            summaryMessage += `❌ *Gagal Vote:* (${uniqueFailedToVote.length})\n`;
+            if (uniqueFailedToVote.length > 0) {
+                // Log details for each failure
+                const failedDetails = cycleSummary.accountsFailedToVote
+                    .map(item => `- ${item.name} (Poll: "${item.poll}", Sebab: ${item.reason || 'Tidak diketahui'})`)
+                    .join('\n');
+                summaryMessage += failedDetails + '\n\n';
+            } else {
+                summaryMessage += `- Tidak ada\n\n`;
+            }
+
+            summaryMessage += `🚫 *Dilewati (Token/Konfigurasi):* (${uniqueSkipped.length + uniqueTokenFailed.length})\n`;
+            if (uniqueSkipped.length > 0) {
+                summaryMessage += uniqueSkipped.map(name => `- ${name} (Sebab: Konfigurasi username tidak ada)`).join('\n') + '\n';
+            }
+            if (uniqueTokenFailed.length > 0) {
+                summaryMessage += uniqueTokenFailed.map(name => `- ${name} (Sebab: Gagal memperbarui token)`).join('\n') + '\n';
+            }
+            if (uniqueSkipped.length === 0 && uniqueTokenFailed.length === 0) {
+                summaryMessage += `- Tidak ada\n`;
+            }
+        }
+
+        try {
+            await whatsappClient.sendMessage(adminChatId, summaryMessage);
+            console.log(`📱 Ringkasan siklus dikirim ke WA admin: ${config.wa_admin}`);
+        } catch (waErr) {
+            console.error(`❌ Gagal mengirim ringkasan WA ke admin ${config.wa_admin}:`, waErr.message);
+        }
+    }
 }
 
 // --- FUNGSI MAIN() YANG MENGATUR JADWAL & PILIHAN ---
@@ -535,26 +611,26 @@ async function main() {
     console.log('atau nomor sekunder (nomor bot), BUKAN nomor pribadi Anda.');
     console.log('Ini untuk menghindari risiko pemblokiran pada nomor utama Anda.\n');
 
-    const choice = await askQuestion('--> Apakah Anda ingin menjalankan bot dengan notifikasi WhatsApp? (y/n): ');
-    const withWhatsApp = choice === 'y';
+    const config = await readConfig();
+    let whatsappClient = null;
+    let withWhatsApp = false;
+
+    if (config.wa_admin) {
+        withWhatsApp = true;
+        console.log(`\n✅ Fitur notifikasi WhatsApp aktif. Notifikasi akan dikirim ke ${config.wa_admin}.`);
+    } else {
+        console.log(`\n❌ Fitur notifikasi WhatsApp tidak aktif. Tambahkan "wa_admin" di config.json untuk mengaktifkannya.`);
+    }
 
     const intervalHours = 5;
     const intervalInMs = intervalHours * 60 * 60 * 1000;
-
-    if (withWhatsApp) {
-        console.log('\nOke, bot akan berjalan dengan notifikasi WhatsApp (mode On-Demand).');
-    } else {
-        console.log('\nOke, bot akan berjalan TANPA notifikasi WhatsApp.');
-    }
     console.log(`Siklus pengecekan akan berjalan setiap ${intervalHours} jam.`);
 
     while (true) {
         console.log(`\n\n--- MEMULAI SIKLUS PENGECEKAN BARU --- (${new Date().toLocaleString('id-ID', { timeZone: 'Asia/Jakarta' })}) ---`);
-        let whatsappClient = null;
 
         try {
             if (withWhatsApp) {
-                const config = await readConfig();
                 const isHeadless = (config.display === 'on') ? false : true;
                 whatsappClient = new Client({
                     authStrategy: new LocalAuth({ dataPath: config.whatsappSessionPath }),
@@ -575,6 +651,7 @@ async function main() {
                 console.log("\nMematikan client WhatsApp untuk menghemat sumber daya...");
                 await whatsappClient.destroy();
                 console.log("Client WhatsApp berhasil dimatikan.");
+                whatsappClient = null;
             }
         }
 
