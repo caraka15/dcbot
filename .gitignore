@@ -6,6 +6,7 @@
 
 # File konfigurasi yang berisi data sensitif
 config.json
+poll_data.json
 
 # Dependensi Node.js
 /node_modules/
